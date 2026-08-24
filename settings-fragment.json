@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -n \"$CLAUDE_SESSIONS_HOOK\" ] && exit 0; export CLAUDE_SESSIONS_HOOK=1; python3 ~/.claude/scripts/parse_sessions.py --incremental --summarize-dirty --cwd \"$PWD\"'",
+            "async": true,
+            "timeout": 600
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -n \"$CLAUDE_SESSIONS_HOOK\" ] && exit 0; export CLAUDE_SESSIONS_HOOK=1; python3 ~/.claude/scripts/parse_sessions.py --incremental --summarize-dirty --cwd \"$PWD\"'",
+            "async": true,
+            "timeout": 600
+          }
+        ]
+      }
+    ]
+  }
+}

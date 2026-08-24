@@ -9,6 +9,12 @@ SRC_SCRIPT="$SCRIPT_DIR/scripts/parse_sessions.py"
 SRC_SKILL="$SCRIPT_DIR/skills/sessions/SKILL.md"
 SRC_FRAGMENT="$SCRIPT_DIR/settings-fragment.json"
 
+# Companion files are expected next to this script when run from a checkout.
+# When piped via `curl ... | bash` there is no checkout, so ensure_sources()
+# falls back to fetching them from this raw URL into a temp dir.
+RAW_BASE="https://raw.githubusercontent.com/Scientist1781999/claude-code-session-management-plugin/main"
+TMP_DIR=""
+
 DST_SCRIPT="$CLAUDE_DIR/scripts/parse_sessions.py"
 DST_SKILL="$CLAUDE_DIR/skills/sessions/SKILL.md"
 DST_SETTINGS="$CLAUDE_DIR/settings.json"
@@ -90,6 +96,13 @@ on_err() {
   exit "$code"
 }
 trap on_err ERR
+
+cleanup() {
+  if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
+    rm -rf "$TMP_DIR"
+  fi
+}
+trap cleanup EXIT
 
 JQ_AVAILABLE=0
 
@@ -294,7 +307,45 @@ sanity_run() {
   fi
 }
 
+# Ensure SRC_SCRIPT / SRC_SKILL / SRC_FRAGMENT exist. From a local checkout the
+# files sit next to this script; when piped via `curl ... | bash` there is no
+# checkout, so fetch them from RAW_BASE into a fresh temp dir.
+ensure_sources() {
+  if [ -f "$SRC_SCRIPT" ] && [ -f "$SRC_SKILL" ] && [ -f "$SRC_FRAGMENT" ]; then
+    return 0
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    fail "curl not found on PATH — needed to fetch companion files from GitHub"
+    exit 1
+  fi
+
+  TMP_DIR="$(mktemp -d)"
+  SRC_SCRIPT="$TMP_DIR/scripts/parse_sessions.py"
+  SRC_SKILL="$TMP_DIR/skills/sessions/SKILL.md"
+  SRC_FRAGMENT="$TMP_DIR/settings-fragment.json"
+  mkdir -p "$(dirname "$SRC_SCRIPT")" "$(dirname "$SRC_SKILL")"
+
+  for rel in \
+    "scripts/parse_sessions.py" \
+    "skills/sessions/SKILL.md" \
+    "settings-fragment.json"; do
+    case "$rel" in
+      scripts/*) dst="$SRC_SCRIPT" ;;
+      skills/*)  dst="$SRC_SKILL" ;;
+      *)         dst="$SRC_FRAGMENT" ;;
+    esac
+    url="$RAW_BASE/$rel"
+    if ! curl -fsSL "$url" -o "$dst"; then
+      fail "failed to fetch $url"
+      exit 1
+    fi
+    ok "fetched $url"
+  done
+}
+
 install_flow() {
+  ensure_sources
   preflight
   copy_files
   merge_settings
@@ -399,6 +450,7 @@ with open('$merged', 'w') as f:
 }
 
 uninstall_flow() {
+  ensure_sources
   os="$(uname -s)"
   case "$os" in
     Darwin|Linux) : ;;
