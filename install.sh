@@ -279,6 +279,12 @@ with open('$merged', 'w') as f:
 "
   fi
 
+  if ! python3 -c "import json,sys; json.load(open('$merged'))" >/dev/null 2>&1; then
+    fail "merge produced invalid JSON — aborting, $DST_SETTINGS left untouched"
+    rm -f "$merged"
+    exit 1
+  fi
+
   mv "$merged" "$DST_SETTINGS"
   ok "merged hooks into $DST_SETTINGS"
 }
@@ -342,6 +348,30 @@ ensure_sources() {
     fi
     ok "fetched $url"
   done
+}
+
+# Fetches only settings-fragment.json if it's not present locally. Uninstall
+# never reads the script or skill sources — it only needs the fragment to
+# unmerge hooks — so don't fetch parse_sessions.py/SKILL.md at all. If the
+# fragment can't be found or fetched, leave SRC_FRAGMENT missing so
+# unmerge_settings() warns and leaves settings.json untouched.
+ensure_fragment_only() {
+  if [ -f "$SRC_FRAGMENT" ]; then
+    return 0
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    warn "curl not found — cannot fetch settings-fragment.json for uninstall; $DST_SETTINGS left untouched"
+    return 0
+  fi
+
+  TMP_DIR="$(mktemp -d)"
+  SRC_FRAGMENT="$TMP_DIR/settings-fragment.json"
+  if ! curl -fsSL "$RAW_BASE/settings-fragment.json" -o "$SRC_FRAGMENT"; then
+    warn "could not fetch $RAW_BASE/settings-fragment.json — $DST_SETTINGS left untouched"
+    return 0
+  fi
+  ok "fetched $RAW_BASE/settings-fragment.json"
 }
 
 install_flow() {
@@ -445,12 +475,18 @@ with open('$merged', 'w') as f:
 "
   fi
 
+  if ! python3 -c "import json,sys; json.load(open('$merged'))" >/dev/null 2>&1; then
+    fail "merge produced invalid JSON — aborting, $DST_SETTINGS left untouched"
+    rm -f "$merged"
+    exit 1
+  fi
+
   mv "$merged" "$DST_SETTINGS"
   ok "removed fragment's hook entries from $DST_SETTINGS"
 }
 
 uninstall_flow() {
-  ensure_sources
+  ensure_fragment_only
   os="$(uname -s)"
   case "$os" in
     Darwin|Linux) : ;;
