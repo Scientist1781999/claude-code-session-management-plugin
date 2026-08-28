@@ -20,6 +20,7 @@ CLAUDE_DIR = os.path.join(HOME, ".claude")
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
 CACHE_DIR = os.path.join(CLAUDE_DIR, "context-cache")
 INDEX_PATH = os.path.join(CACHE_DIR, "index.json")
+REPOS_DIR = os.path.join(CACHE_DIR, "repos")
 LOG_PATH = os.path.join(CACHE_DIR, "parse.log")
 LOCK_STALE_SECONDS = 1800
 
@@ -233,8 +234,55 @@ def load_index():
     return data
 
 
+def repo_index_path(slug):
+    return os.path.join(REPOS_DIR, f"{slug}.json")
+
+
 def save_index(index):
     atomic_write(INDEX_PATH, json.dumps(index, indent=2, sort_keys=True) + "\n")
+
+    # Write-through per-repo slices so --list/--search/--status --cwd can read
+    # only the current repo's sessions instead of the whole index.json.
+    by_repo = {}
+    for uuid, entry in (index.get("sessions") or {}).items():
+        slug = cwd_slug(entry.get("cwd"))
+        by_repo.setdefault(slug, {})[uuid] = entry
+    for slug, sessions in by_repo.items():
+        atomic_write(repo_index_path(slug), json.dumps({"sessions": sessions}, indent=2, sort_keys=True) + "\n")
+
+
+def load_repo_sessions(slug, cwd_filter=None):
+    """Return only one repo's sessions, from its per-repo slice file.
+
+    Falls back to the monolithic index (matching on slug, or on the cwd
+    substring like build_rows) when the slice is missing, writing the slice
+    for next time.
+    """
+    path = repo_index_path(slug)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            sessions = data.get("sessions") or {}
+            # Trust the slice only if it is a real repo slice — i.e. at least one
+            # session's cwd maps to this slug. Partial-path filters (e.g.
+            # --cwd Downloads) produce artifact slices whose sessions belong to
+            # other slugs; those are never refreshed by save_index() and would
+            # go stale, so always recompute them from the master index.
+            if sessions and any(cwd_slug(e.get("cwd")) == slug for e in sessions.values()):
+                return sessions
+        except Exception:
+            pass
+
+    index = load_index()
+    sessions = {
+        u: e for u, e in (index.get("sessions") or {}).items()
+        if (cwd_filter and cwd_filter in (e.get("cwd") or ""))
+        or cwd_slug(e.get("cwd")) == slug
+    }
+    if sessions and any(cwd_slug(e.get("cwd")) == slug for e in sessions.values()):
+        atomic_write(path, json.dumps({"sessions": sessions}, indent=2, sort_keys=True) + "\n")
+    return sessions
 
 
 def discover_session_files():
@@ -831,8 +879,11 @@ def collapse_similar(rows):
 
 
 def cmd_list(cwd_filter, as_json, limit=None):
-    index = load_index()
-    rows = build_rows(index["sessions"], cwd_filter)
+    if cwd_filter:
+        sessions = load_repo_sessions(cwd_slug(cwd_filter), cwd_filter)
+    else:
+        sessions = load_index()["sessions"]
+    rows = build_rows(sessions, cwd_filter)
     rows = collapse_similar(rows)
     rows.sort(key=lambda r: r["last_active"] or "", reverse=True)
     if limit:
@@ -1180,8 +1231,10 @@ def cmd_resummarize(session_uuid):
 
 
 def cmd_status(cwd_filter=None):
-    index = load_index()
-    sessions = index["sessions"]
+    if cwd_filter:
+        sessions = load_repo_sessions(cwd_slug(cwd_filter), cwd_filter)
+    else:
+        sessions = load_index()["sessions"]
 
     lock = _read_lock(lock_path_for(cwd_filter))
     lock_pid = lock.get("pid") if lock else None
@@ -1249,15 +1302,18 @@ def report_summarize(summarized, failures):
 
 
 def cmd_search(term, cwd_filter, as_json):
-    index = load_index()
-    rows = build_rows(index["sessions"], cwd_filter)
+    if cwd_filter:
+        sessions = load_repo_sessions(cwd_slug(cwd_filter), cwd_filter)
+    else:
+        sessions = load_index()["sessions"]
+    rows = build_rows(sessions, cwd_filter)
     rows_by_uuid = {r["uuid"]: r for r in rows}
     term_lower = term.lower()
 
     # (weight, uuid, matched_on, matching_decision)
     scored = []
     for uuid, row in rows_by_uuid.items():
-        entry = index["sessions"][uuid]
+        entry = sessions[uuid]
         decisions = entry.get("decisions") or []
         topics = entry.get("topics") or []
 
